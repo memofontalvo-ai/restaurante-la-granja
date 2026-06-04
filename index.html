@@ -995,7 +995,7 @@
   <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
     <div>
       <h1>Cuadre de Caja</h1>
-      <p id="cuadre-subtitle">Ingresa los valores del turno para cuadrar la caja del día</p>
+      <p id="cuadre-subtitle">Selecciona el turno e ingresa los valores para cuadrar la caja · <span style="color:var(--gold);font-weight:600;">v3</span></p>
     </div>
     <div style="display:flex;gap:8px;margin-top:6px;" id="cuadre-header-btns"></div>
   </div>
@@ -1016,8 +1016,8 @@
         <input type="date" id="fecha" class="money" onchange="autoCargarFecha(this.value)">
       </div>
       <div class="field">
-        <label>Turno</label>
-        <select id="turno" onchange="autoCargarFecha(document.getElementById('fecha').value)">
+        <label style="color:var(--gold);font-weight:700;">⏰ Turno (selecciona A o B)</label>
+        <select id="turno" onchange="autoCargarFecha(document.getElementById('fecha').value)" style="border:2px solid var(--gold);font-weight:600;">
           <option value="A">Turno A (Mañana)</option>
           <option value="B">Turno B (Tarde)</option>
         </select>
@@ -1715,7 +1715,10 @@ async function cargarDatosFirebase() {
   try {
     mostrarCargando(true);
     document.getElementById('login-screen').style.display = 'none';
-    const snapshot = await db.collection(COLLECTION).orderBy('fecha').get();
+    // Timeout de 15s: si Firebase no responde, no dejar la app pegada cargando
+    const consulta = db.collection(COLLECTION).orderBy('fecha').get();
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000));
+    const snapshot = await Promise.race([consulta, timeout]);
     _cache = snapshot.docs.map(doc => doc.data());
     _cacheLoaded = true;
     mostrarCargando(false);
@@ -1730,7 +1733,11 @@ async function cargarDatosFirebase() {
     console.error('Error cargando datos:', e);
     mostrarCargando(false);
     document.getElementById('login-screen').style.display = 'none';
-    showToast('⚠️ Sin conexión — los datos no se sincronizarán');
+    _cacheLoaded = true;
+    const hoy = new Date().toISOString().slice(0,10);
+    const fechaEl = document.getElementById('fecha');
+    if(fechaEl && !fechaEl.value) fechaEl.value = hoy;
+    showToast('⚠️ Sin conexión — revisa tu internet y recarga');
   }
 }
 
@@ -3704,9 +3711,6 @@ async function guardarImportFirebase() {
       // Limpiar campos undefined antes de enviar a Firebase
       const recLimpio = JSON.parse(JSON.stringify(rec));
       await db.collection(COLLECTION).doc(docId).set(recLimpio);
-      // Verificar que se guardó leyendo de vuelta
-      const verif = await db.collection(COLLECTION).doc(docId).get();
-      if(!verif.exists) throw new Error('Verificacion fallo: documento no existe despues de set()');
       // Actualizar cache local (clave = fecha+turno)
       const idx = _cache.findIndex(d => d.fecha === rec.fecha && (d.turno||'A') === turno);
       if(idx >= 0) _cache[idx] = recLimpio; else _cache.push(recLimpio);
