@@ -1016,12 +1016,38 @@
         <input type="date" id="fecha" class="money" onchange="autoCargarFecha(this.value)">
       </div>
       <div class="field">
+        <label>Turno</label>
+        <select id="turno" onchange="autoCargarFecha(document.getElementById('fecha').value)">
+          <option value="A">Turno A (Mañana)</option>
+          <option value="B">Turno B (Tarde)</option>
+        </select>
+      </div>
+      <div class="field">
         <label>Responsable de Caja</label>
         <input type="text" id="cajero" placeholder="Ej: Nombre Cajera" value="Cajera La Granja">
       </div>
+    </div>
+  </div>
+
+  <!-- CONCEPTOS ADICIONALES -->
+  <div class="card">
+    <div class="card-title">🧾 Conceptos del Turno</div>
+    <div class="grid-4">
       <div class="field">
         <label>Propina General ($)</label>
-        <input type="number" id="propina" class="money" placeholder="0" oninput="calcular()" inputmode="numeric" data-money="1">
+        <input type="text" id="propina" class="money" placeholder="0" oninput="calcular()" inputmode="numeric" data-money="1">
+      </div>
+      <div class="field">
+        <label>Impuesto al Consumo ($)</label>
+        <input type="text" id="impuestos" class="money" placeholder="0" oninput="calcular()" inputmode="numeric" data-money="1">
+      </div>
+      <div class="field">
+        <label>Domicilio ($)</label>
+        <input type="text" id="domicilio" class="money" placeholder="0" oninput="calcular()" inputmode="numeric" data-money="1">
+      </div>
+      <div class="field">
+        <label>Transporte ($)</label>
+        <input type="text" id="transporte" class="money" placeholder="0" oninput="calcular()" inputmode="numeric" data-money="1">
       </div>
     </div>
   </div>
@@ -1048,13 +1074,17 @@
       </div>
     </div>
     <div class="divider"></div>
-    <div class="grid-3">
+    <div class="grid-4">
       <div class="stat-chip">
-        <div class="label">Total con Propina</div>
+        <div class="label">Total Medios de Pago</div>
         <div class="value gold" id="total_medios">$0</div>
       </div>
       <div class="stat-chip">
-        <div class="label">Total sin Propina</div>
+        <div class="label">Total antes de Impuestos</div>
+        <div class="value" id="total_antes_imp">$0</div>
+      </div>
+      <div class="stat-chip">
+        <div class="label">Total antes de Propina</div>
         <div class="value" id="total_sin_propina">$0</div>
       </div>
       <div class="stat-chip">
@@ -1571,19 +1601,78 @@ let _cacheLoaded = false;
 
 function getData() { return _cache; }
 
+// ════════════════════════════════════════
+// CONSOLIDACIÓN POR DÍA (Turno A + Turno B)
+// _cache guarda turnos individuales con campo .turno ('A'/'B') y .fecha
+// getDataConsolidado() devuelve un registro por día sumando ambos turnos
+// ════════════════════════════════════════
+const CAMPOS_SUMABLES = ['propina','impuestos','domicilio','transporte','efectivo',
+  'datafono','transferencia','cxc','total_ventas','total_antes_imp','total_sin_propina',
+  'anticipo_ef','anticipo_otros','ef_terceros','traslado_fuerte','total_egresos',
+  'conteo_billetes','conteo_monedas','conteo_fisico',
+  'cant_b100','cant_b50','cant_b20','cant_b10','cant_b5','cant_b2','cant_b1',
+  'cant_m1000','cant_m500','cant_m200','cant_m100','cant_m50'];
+
+function consolidarDia(turnos) {
+  // turnos: array de registros de la misma fecha
+  if(turnos.length === 0) return null;
+  turnos.sort((a,b) => (a.turno||'A').localeCompare(b.turno||'A'));
+  const base = JSON.parse(JSON.stringify(turnos[0]));
+  const cons = { fecha: base.fecha, cajero: base.cajero, _turnos: turnos.length };
+
+  // Sumar campos sumables
+  CAMPOS_SUMABLES.forEach(c => {
+    cons[c] = turnos.reduce((a,t) => a + (Number(t[c])||0), 0);
+  });
+
+  // Egresos: concatenar de ambos turnos
+  cons.egresos = [];
+  turnos.forEach(t => { if(Array.isArray(t.egresos)) cons.egresos = cons.egresos.concat(t.egresos); });
+
+  // Saldo anterior = el del primer turno; saldo final = el del último turno
+  cons.saldo_anterior = Number(turnos[0].saldo_anterior)||0;
+  cons.saldo_final = Number(turnos[turnos.length-1].saldo_final)||0;
+
+  // Sobrante = conteo físico - saldo final
+  cons.sobrante = (cons.conteo_fisico||0) - (cons.saldo_final||0);
+
+  // Lista de cajeros del día
+  cons.cajeros = turnos.map(t => t.cajero).filter(Boolean).join(' / ');
+
+  return cons;
+}
+
+function getDataConsolidado() {
+  // Agrupar _cache por fecha
+  const porFecha = {};
+  _cache.forEach(t => {
+    if(!porFecha[t.fecha]) porFecha[t.fecha] = [];
+    porFecha[t.fecha].push(t);
+  });
+  return Object.keys(porFecha).sort()
+    .map(fecha => consolidarDia(porFecha[fecha]))
+    .filter(Boolean);
+}
+
+// Obtener un turno específico
+function getTurno(fecha, turno) {
+  return _cache.find(t => t.fecha === fecha && (t.turno||'A') === turno);
+}
+
 function saveData(arr) {
   _cache = arr;
   // No se llama directamente — usar saveRegistro / deleteRegistro
 }
 
 // Guardar UN registro en Firestore
-async function saveRegistro(registro) {
+async function saveRegistro(registro, docId) {
+  const id = docId || (registro.fecha + '_' + (registro.turno||'A'));
   try {
-    await db.collection(COLLECTION).doc(registro.fecha).set(registro);
-    // Actualizar cache
-    const idx = _cache.findIndex(d => d.fecha === registro.fecha);
+    await db.collection(COLLECTION).doc(id).set(registro);
+    // Actualizar cache (clave única = fecha+turno)
+    const idx = _cache.findIndex(d => d.fecha === registro.fecha && (d.turno||'A') === (registro.turno||'A'));
     if(idx >= 0) _cache[idx] = registro; else _cache.push(registro);
-    _cache.sort((a,b) => a.fecha.localeCompare(b.fecha));
+    _cache.sort((a,b) => ((a.fecha||'')+(a.turno||'A')).localeCompare((b.fecha||'')+(b.turno||'A')));
   } catch(e) {
     console.error('Error guardando en Firebase:', e);
     showToast('⚠️ Error al guardar. Verifica tu conexión.');
@@ -2087,10 +2176,14 @@ function attachMoneyFormatters() {
 function calcular() {
   const ef=n('v_efectivo'),df=n('v_datafono'),tr=n('v_transferencia'),cxc=n('v_cxc');
   const propina=n('propina');
+  const impuestos=n('impuestos');
   const total_med=ef+df+tr+cxc;
-  const sin_propina=total_med-propina;
+  const antes_imp=total_med-impuestos;
+  const antes_propina=antes_imp-propina;
   document.getElementById('total_medios').textContent=fmt(total_med);
-  document.getElementById('total_sin_propina').textContent=fmt(sin_propina);
+  const aiEl=document.getElementById('total_antes_imp');
+  if(aiEl) aiEl.textContent=fmt(antes_imp);
+  document.getElementById('total_sin_propina').textContent=fmt(antes_propina);
   document.getElementById('propina_show').textContent=fmt(propina);
   const cierre=n('cierre_datafono'),redeban=n('redeban_datafono');
   const dif_df=cierre-redeban;
@@ -2102,21 +2195,35 @@ function calcular() {
   document.getElementById('total_egresos').textContent=fmt(totalEgr);
   const cntEl=document.getElementById('egr_conteo');
   if(cntEl){ const nE=document.querySelectorAll('#egresos-lista .egress-card').length; cntEl.textContent=nE?nE+' egreso'+(nE!==1?'s':''):''; }
-  const data=getData();
-  let saldo_ant=0;
-  const fechaSel=document.getElementById('fecha')?.value;
-  if(fechaSel && data.length>0) {
-    const previos=data.filter(d=>d.fecha<fechaSel);
-    if(previos.length>0) saldo_ant=previos[previos.length-1].saldo_final;
-  } else if(data.length>0) {
-    saldo_ant=data[data.length-1].saldo_final;
-  }
+  // Saldo anterior: del mismo turno del día previo, o turno A si estamos en B
+  const saldo_ant=calcularSaldoAnterior();
   document.getElementById('saldo_anterior_show').textContent=fmt(saldo_ant);
   const traslado=n('traslado_fuerte');
   const ae=n('anticipo_ef'),et3=n('ef_terceros');
   const saldo_final=saldo_ant+ef+ae+et3-totalEgr-traslado;
   document.getElementById('saldo_final_calc').textContent=fmt(saldo_final);
   calcularConteo(saldo_final);
+}
+
+// Calcula el saldo anterior según turno: cada turno tiene su propio saldo
+function calcularSaldoAnterior() {
+  const data=getData();
+  if(data.length===0) return 0;
+  const fechaSel=document.getElementById('fecha')?.value;
+  if(!fechaSel) return data[data.length-1].saldo_final||0;
+  // Buscar el turno inmediatamente anterior cronológicamente (por fecha+turno)
+  const ordenados=[...data].sort((a,b)=>{
+    const k1=(a.fecha||'')+(a.turno||'A'), k2=(b.fecha||'')+(b.turno||'A');
+    return k1.localeCompare(k2);
+  });
+  const turnoSel=document.getElementById('turno')?.value||'A';
+  const claveActual=fechaSel+turnoSel;
+  let saldo=0;
+  for(const d of ordenados){
+    const clave=(d.fecha||'')+(d.turno||'A');
+    if(clave<claveActual) saldo=d.saldo_final||0;
+  }
+  return saldo;
 }
 
 function calcularConteo(saldo_final_param) {
@@ -2149,14 +2256,18 @@ function calcularConteo(saldo_final_param) {
 function guardarCuadre() {
   const fecha=document.getElementById('fecha').value;
   if(!fecha) { showToast('⚠️ Ingresa la fecha del turno'); return; }
+  const turno=document.getElementById('turno')?.value||'A';
+  const docId=fecha+'_'+turno;
   const data=getData();
-  const existe=data.findIndex(d=>d.fecha===fecha);
+  const existe=data.findIndex(d=>d.fecha===fecha && (d.turno||'A')===turno);
   const {total:totalEgr,lista:listaEgr}=getEgresos();
-  let saldo_ant=0;
-  if(data.length>0) saldo_ant=data[data.length-1].saldo_final;
+  const saldo_ant=calcularSaldoAnterior();
   const ef=n('v_efectivo'),df=n('v_datafono'),tr=n('v_transferencia'),cxc=n('v_cxc');
   const propina=n('propina');
+  const impuestos=n('impuestos'),domicilio=n('domicilio'),transporte=n('transporte');
   const total_med=ef+df+tr+cxc;
+  const total_antes_imp=total_med-impuestos;
+  const total_antes_propina=total_antes_imp-propina;
   const traslado=n('traslado_fuerte'),ae=n('anticipo_ef'),ao=n('anticipo_otros'),et3=n('ef_terceros');
   const saldo_final=saldo_ant+ef+ae+et3-totalEgr-traslado;
   let totalB=0,totalM=0;
@@ -2178,9 +2289,10 @@ function guardarCuadre() {
   const cant_m100 =parseFloat(document.getElementById('m100')?.value)||0;
   const cant_m50  =parseFloat(document.getElementById('m50')?.value)||0;
   const registro={
-    fecha, cajero:document.getElementById('cajero').value,
-    propina, efectivo:ef, datafono:df, transferencia:tr, cxc,
-    total_ventas:total_med, total_sin_propina:total_med-propina,
+    fecha, turno, cajero:document.getElementById('cajero').value,
+    propina, impuestos, domicilio, transporte,
+    efectivo:ef, datafono:df, transferencia:tr, cxc,
+    total_ventas:total_med, total_antes_imp, total_sin_propina:total_antes_propina,
     anticipo_ef:ae, anticipo_otros:ao, ef_terceros:et3,
     traslado_fuerte:traslado, egresos:listaEgr, total_egresos:totalEgr,
     cierre_datafono:n('cierre_datafono'), redeban:n('redeban_datafono'),
@@ -2191,8 +2303,8 @@ function guardarCuadre() {
     guardado_en:new Date().toISOString()
   };
   const isUpdate = existe >= 0;
-  saveRegistro(registro).then(() => {
-    showToast(isUpdate ? '✏️ Cuadre actualizado' : '✅ Cuadre guardado correctamente');
+  saveRegistro(registro, docId).then(() => {
+    showToast(isUpdate ? '✏️ Turno '+turno+' actualizado' : '✅ Turno '+turno+' guardado correctamente');
     renderHistorial();
     cargarSaldoAnterior();
     if(window.currentUser?.role==='cajera') setTimeout(()=>actualizarBotonesFormulario(true),100);
@@ -2211,10 +2323,20 @@ function renderHistorial() {
   const filtrado=mes?data.filter(d=>d.fecha.startsWith(mes)):data;
   const cont=document.getElementById('historial_tabla');
   if(filtrado.length===0){ cont.innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted);">No hay registros para este mes</div>'; return; }
-  const rows=[...filtrado].reverse().map(d=>{
+  // Ordenar por fecha+turno descendente (más reciente primero)
+  const ordenado=[...filtrado].sort((a,b)=>{
+    const ka=(a.fecha||'')+(a.turno||'A'), kb=(b.fecha||'')+(b.turno||'A');
+    return kb.localeCompare(ka);
+  });
+  const rows=ordenado.map(d=>{
     const ok=Math.abs(d.sobrante||0)<=10000;
+    const turno=d.turno||'A';
+    const badgeTurno=turno==='A'
+      ? '<span class="badge" style="background:rgba(76,175,122,.15);color:#7ddfa3;border:1px solid rgba(76,175,122,.4);">Turno A</span>'
+      : '<span class="badge" style="background:rgba(96,165,250,.15);color:#93c5fd;border:1px solid rgba(96,165,250,.4);">Turno B</span>';
     return `<tr>
       <td data-label="Fecha">${formatFecha(d.fecha)}</td>
+      <td data-label="Turno">${badgeTurno}</td>
       <td class="num" data-label="Ventas" style="color:var(--gold)">${fmt(d.total_ventas)}</td>
       <td class="num" data-label="Efectivo">${fmt(d.efectivo)}</td>
       <td class="num" data-label="Datáfono">${fmt(d.datafono)}</td>
@@ -2223,13 +2345,13 @@ function renderHistorial() {
       <td class="num" data-label="Saldo Final">${fmt(d.saldo_final)}</td>
       <td data-label="Estado"><span class="badge ${ok?'badge-green':'badge-red'}">${ok?'✓ Cuadra':'✗ Dif.'}</span></td>
       <td class="actions" data-label="Acciones">
-        <button class="btn btn-outline btn-xs" onclick="cargarDia('${d.fecha}')">${window.currentUser&&window.currentUser.role==='admin'?'✏️ Editar':'👁 Ver'}</button>
-        <button class="btn btn-xs" style="color:var(--green);border:1px solid var(--green);background:rgba(76,175,122,.08);border-radius:6px;" onclick="exportarExcel('${d.fecha}')">📊 Excel</button>
-        ${window.currentUser&&window.currentUser.role==='admin'?`<button class="btn btn-danger btn-xs" onclick="eliminarDia('${d.fecha}')">✕</button>`:''}
+        <button class="btn btn-outline btn-xs" onclick="cargarDia('${d.fecha}','${turno}')">${window.currentUser&&window.currentUser.role==='admin'?'✏️ Editar':'👁 Ver'}</button>
+        <button class="btn btn-xs" style="color:var(--green);border:1px solid var(--green);background:rgba(76,175,122,.08);border-radius:6px;" onclick="exportarExcel('${d.fecha}','${turno}')">📊 Excel</button>
+        ${window.currentUser&&window.currentUser.role==='admin'?`<button class="btn btn-danger btn-xs" onclick="eliminarDia('${d.fecha}','${turno}')">✕</button>`:''}
       </td>
     </tr>`;
   }).join('');
-  cont.innerHTML=`<div class="tbl-wrap"><table class="tbl tbl-mobile-stack"><thead><tr><th>Fecha</th><th>Ventas</th><th>Efectivo</th><th>Datáfono</th><th>Transfer.</th><th>Egresos</th><th>Saldo Final</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  cont.innerHTML=`<div class="tbl-wrap"><table class="tbl tbl-mobile-stack"><thead><tr><th>Fecha</th><th>Turno</th><th>Ventas</th><th>Efectivo</th><th>Datáfono</th><th>Transfer.</th><th>Egresos</th><th>Saldo Final</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 // ════════════════════════════════════════
@@ -2242,10 +2364,11 @@ function autoCargarFecha(fecha) {
   const draftInd = document.getElementById('draft-indicator');
   if(draftInd) draftInd.style.display = 'none';
   const data = getData();
-  const d = data.find(x => x.fecha === fecha);
+  const turnoSel = document.getElementById('turno')?.value || 'A';
+  const d = data.find(x => x.fecha === fecha && (x.turno||'A') === turnoSel);
   if(!d) {
-    // Fecha nueva — limpiar campos
-    ['propina','v_efectivo','v_datafono','v_transferencia','v_cxc',
+    // Fecha/turno nuevo — limpiar campos
+    ['propina','impuestos','domicilio','transporte','v_efectivo','v_datafono','v_transferencia','v_cxc',
      'cierre_datafono','anticipo_ef','anticipo_otros','ef_terceros','traslado_fuerte',
      'b100','b50','b20','b10','b5','b2','b1','m1000','m500','m200','m100','m50'
     ].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
@@ -2261,6 +2384,9 @@ function autoCargarFecha(fecha) {
   // Mapeo exacto: clave en datos → id del campo en el formulario
   const camposMoney = {
     'propina':        'propina',
+    'impuestos':      'impuestos',
+    'domicilio':      'domicilio',
+    'transporte':     'transporte',
     'efectivo':       'v_efectivo',
     'datafono':       'v_datafono',
     'transferencia':  'v_transferencia',
@@ -2337,25 +2463,30 @@ function autoCargarFecha(fecha) {
             ' Tr:$' + Math.round(tr_loaded).toLocaleString('es-CO'));
 }
 
-function cargarDia(fecha) {
-  const data=getData();
-  const d=data.find(x=>x.fecha===fecha);
+function cargarDia(fecha, turno) {
+  turno = turno || 'A';
+  const d = getTurno(fecha, turno);
   if(!d) return;
   showPage('ingreso',document.getElementById('navbtn-ingreso'));
+  // Poner turno primero
+  const turnoEl=document.getElementById('turno');
+  if(turnoEl) turnoEl.value=turno;
   // Poner fecha
   const fechaEl=document.getElementById('fecha');
   if(fechaEl) fechaEl.value=d.fecha;
-  // Usar el mismo mapeo correcto
+  // Cargar los datos de ese turno específico
   autoCargarFecha(fecha);
 }
 
-function eliminarDia(fecha) {
-  if(!confirm('¿Eliminar el cuadre del '+formatFecha(fecha)+'?')) return;
-  db.collection(COLLECTION).doc(fecha).delete().then(() => {
-    _cache = _cache.filter(d => d.fecha !== fecha);
+function eliminarDia(fecha, turno) {
+  turno = turno || 'A';
+  if(!confirm('¿Eliminar el cuadre del '+formatFecha(fecha)+' — Turno '+turno+'?')) return;
+  const docId = fecha + '_' + turno;
+  db.collection(COLLECTION).doc(docId).delete().then(() => {
+    _cache = _cache.filter(d => !(d.fecha === fecha && (d.turno||'A') === turno));
     renderHistorial();
     cargarSaldoAnterior();
-    showToast('🗑️ Cuadre eliminado');
+    showToast('🗑️ Turno '+turno+' eliminado');
   }).catch(e => {
     console.error('Error eliminando:', e);
     showToast('⚠️ Error al eliminar');
@@ -2367,7 +2498,7 @@ function eliminarDia(fecha) {
 // ════════════════════════════════════════
 function renderReportes() {
   const mesRep=document.getElementById('filtro_mes_rep')?.value||'';
-  let data=getData();
+  let data=getDataConsolidado();
   if(mesRep) data=data.filter(d=>d.fecha.startsWith(mesRep));
   if(data.length===0){
     document.getElementById('kpis_reportes').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:32px 20px;color:var(--text-muted);font-size:0.88rem;">Sin datos para este período.</div>';
@@ -2426,7 +2557,7 @@ function renderReportes() {
 function generarPYG() {
   const mes=document.getElementById('mes_pyg').value;
   if(!mes) { showToast('Selecciona un mes'); return; }
-  const data=getData().filter(d=>d.fecha.startsWith(mes));
+  const data=getDataConsolidado().filter(d=>d.fecha.startsWith(mes));
   const cont=document.getElementById('pyg_content');
   if(data.length===0){ cont.innerHTML='<div class="card" style="text-align:center;padding:40px;color:var(--text-muted);">No hay registros para este mes.</div>'; return; }
   const [year,mon]=mes.split('-');
@@ -2958,7 +3089,7 @@ function renderEgresosAdmin() {
 function renderAnalisisGlobal() {
   const cont = document.getElementById('analisis_content');
   if(!cont) return;
-  const data = getData();
+  const data = getDataConsolidado();
   if(data.length === 0) {
     cont.innerHTML = '<div class="card" style="text-align:center;padding:40px;color:var(--text-muted);">No hay registros cargados en el sistema.</div>';
     return;
@@ -3195,9 +3326,9 @@ function showToast(msg) {
 // ════════════════════════════════════════
 // EXPORTAR EXCEL
 // ════════════════════════════════════════
-function exportarExcel(fecha) {
-  const data=getData();
-  const d=data.find(x=>x.fecha===fecha);
+function exportarExcel(fecha, turno) {
+  turno = turno || 'A';
+  const d = getTurno(fecha, turno);
   if(!d){ showToast('No se encontró el registro'); return; }
   const dias=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
   const meses=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -3210,12 +3341,17 @@ function exportarExcel(fecha) {
   const html=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8"><style>body{font-family:Arial;font-size:10pt;}table{border-collapse:collapse;width:100%;}td,th{border:1px solid #CCC;padding:4px 8px;}.hdr{background:#1F3864;color:white;font-weight:bold;}.sec{background:#2E4057;color:white;font-weight:bold;}.lbl{background:#F2F2F2;font-weight:bold;}.val{text-align:right;}.total{background:#FFF2CC;font-weight:bold;text-align:right;}.green{background:#E2EFDA;text-align:right;}.red{background:#FCE4D6;text-align:right;}.ok{background:#E2EFDA;font-weight:bold;color:#375623;}.fail{background:#FCE4D6;font-weight:bold;color:#9C0006;}.empty{border:none;background:white;}</style></head><body><table>
   <tr><td colspan="4" class="hdr">RESTAURANTE LA GRANJA</td></tr>
   <tr><td class="lbl">NOMBRE:</td><td colspan="3">${d.cajero||''}</td></tr>
-  <tr><td class="lbl">FECHA:</td><td colspan="3">${fechaTexto}</td></tr>
+  <tr><td class="lbl">FECHA:</td><td colspan="3">${fechaTexto} — TURNO ${turno}</td></tr>
   <tr><td class="lbl">PROPINA GNRAL</td><td colspan="3" class="val">${N(d.propina)}</td></tr>
+  <tr><td class="lbl">IMPUESTOS</td><td colspan="3" class="val">${N(d.impuestos)}</td></tr>
+  <tr><td class="lbl">DOMICILIO</td><td colspan="3" class="val">${N(d.domicilio)}</td></tr>
+  <tr><td class="lbl">TRANSPORTE</td><td colspan="3" class="val">${N(d.transporte)}</td></tr>
   <tr><td class="lbl">EFECTIVO</td><td></td><td></td><td class="val">${N(d.efectivo)}</td></tr>
   <tr><td class="lbl">DATÁFONOS</td><td></td><td></td><td class="val">${N(d.datafono)}</td></tr>
   <tr><td class="lbl">TRANSFERENCIAS</td><td></td><td></td><td class="val">${N(d.transferencia)}</td></tr>
+  <tr><td class="lbl">CXC</td><td></td><td></td><td class="val">${N(d.cxc)}</td></tr>
   <tr><td class="lbl">TOTAL MEDIOS DE PAGO</td><td></td><td></td><td class="total">${N(d.total_ventas)}</td></tr>
+  <tr><td class="lbl">TOTAL ANTES DE IMPUESTOS</td><td></td><td></td><td class="total">${N(d.total_antes_imp)}</td></tr>
   <tr><td class="lbl">TOTAL ANTES DE PROPINA</td><td></td><td></td><td class="total">${N(d.total_sin_propina)}</td></tr>
   <tr><td colspan="4" class="sec">EGRESOS</td></tr>
   ${egresoRows}
@@ -3229,9 +3365,9 @@ function exportarExcel(fecha) {
   const blob=new Blob([html],{type:'application/vnd.ms-excel;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
-  a.href=url; a.download=`LaGranja_Cuadre_${d.fecha}.xls`; a.click();
+  a.href=url; a.download=`LaGranja_Cuadre_${d.fecha}_Turno${turno}.xls`; a.click();
   URL.revokeObjectURL(url);
-  showToast('📊 Exportado: LaGranja_Cuadre_'+d.fecha+'.xls');
+  showToast('📊 Exportado: LaGranja_Cuadre_'+d.fecha+'_Turno'+turno+'.xls');
 }
 
 // ════════════════════════════════════════
@@ -3259,8 +3395,12 @@ function guardarBorrador() {
 
   const borrador = {
     fecha:          document.getElementById('fecha')?.value || '',
+    turno:          document.getElementById('turno')?.value || 'A',
     cajero:         document.getElementById('cajero')?.value || '',
     propina:        rawVal('propina') || '',
+    impuestos:      rawVal('impuestos') || '',
+    domicilio:      rawVal('domicilio') || '',
+    transporte:     rawVal('transporte') || '',
     v_efectivo:     rawVal('v_efectivo') || '',
     v_datafono:     rawVal('v_datafono') || '',
     v_transferencia:rawVal('v_transferencia') || '',
@@ -3313,17 +3453,17 @@ function cargarBorrador() {
 }
 
 function restaurarBorrador(b) {
-  const MONEY_FIELDS = ['propina','v_efectivo','v_datafono','v_transferencia',
+  const MONEY_FIELDS = ['propina','impuestos','domicilio','transporte','v_efectivo','v_datafono','v_transferencia',
     'v_cxc','cierre_datafono','redeban_datafono','anticipo_ef','anticipo_otros','ef_terceros','traslado_fuerte'];
-  const ALL_FIELDS = ['fecha','cajero',...MONEY_FIELDS];
+  const ALL_FIELDS = ['fecha','turno','cajero',...MONEY_FIELDS];
   ALL_FIELDS.forEach(id => {
     const el=document.getElementById(id);
-    if(!el || d[id]===undefined) return;
+    if(!el || b[id]===undefined) return;
     if(MONEY_FIELDS.includes(id)) {
-      const num = parseInt((String(d[id]||0)).replace(/[^0-9]/g,''), 10);
+      const num = parseInt((String(b[id]||0)).replace(/[^0-9]/g,''), 10);
       el.value = num ? num.toLocaleString('es-CO') : '';
     } else {
-      el.value = d[id];
+      el.value = b[id];
     }
   });
 
@@ -3479,7 +3619,7 @@ function procesarArchivoExcel(file) {
       const results = [];
       wb.SheetNames.forEach((sheetName, idx) => {
         const ws = wb.Sheets[sheetName];
-        const rec = parsearHojaEYWA(ws, sheetName);
+        const rec = parsearHojaGranja(ws, sheetName);
         if(rec) results.push({...rec, sheetName});
         setProgress(50 + Math.round((idx+1)/total*40), `⚙️ Hoja ${idx+1}/${total}: ${sheetName}`);
       });
@@ -3555,23 +3695,25 @@ async function guardarImportFirebase() {
 
   for(let i = 0; i < results.length; i++) {
     const rec = results[i];
+    const turno = rec.turno || 'A';
+    const docId = rec.fecha + '_' + turno;
     const pct = Math.round(((i+1)/total)*100);
     progFill.style.width = pct + '%';
-    progTxt.textContent = '💾 Guardando ' + (i+1) + '/' + total + ': ' + rec.fecha + '...';
+    progTxt.textContent = '💾 Guardando ' + (i+1) + '/' + total + ': ' + rec.fecha + ' Turno ' + turno + '...';
     try {
       // Limpiar campos undefined antes de enviar a Firebase
       const recLimpio = JSON.parse(JSON.stringify(rec));
-      await db.collection(COLLECTION).doc(rec.fecha).set(recLimpio);
+      await db.collection(COLLECTION).doc(docId).set(recLimpio);
       // Verificar que se guardó leyendo de vuelta
-      const verif = await db.collection(COLLECTION).doc(rec.fecha).get();
+      const verif = await db.collection(COLLECTION).doc(docId).get();
       if(!verif.exists) throw new Error('Verificacion fallo: documento no existe despues de set()');
-      // Actualizar cache local
-      const idx = _cache.findIndex(d => d.fecha === rec.fecha);
+      // Actualizar cache local (clave = fecha+turno)
+      const idx = _cache.findIndex(d => d.fecha === rec.fecha && (d.turno||'A') === turno);
       if(idx >= 0) _cache[idx] = recLimpio; else _cache.push(recLimpio);
       guardados++;
     } catch(e) {
-      console.error('Error guardando ' + rec.fecha + ':', e.code, e.message);
-      progTxt.textContent = '❌ Error en ' + rec.fecha + ': ' + e.message;
+      console.error('Error guardando ' + docId + ':', e.code, e.message);
+      progTxt.textContent = '❌ Error en ' + rec.fecha + ' T' + turno + ': ' + e.message;
       errores++;
     }
   }
@@ -3619,6 +3761,221 @@ async function guardarImportFirebase() {
   renderHistorial();
   cargarSaldoAnterior();
 }
+
+// ════════════════════════════════════════
+// PARSER LA GRANJA — lee por ETIQUETA (no por fila fija)
+// Maneja TURNO A / TURNO B y consolida por día
+// ════════════════════════════════════════
+
+// Busca una fila cuyo texto en columna A (idx 0) contenga la etiqueta dada.
+// Devuelve el número de fila (0-indexed) o -1.
+function buscarFilaPorEtiqueta(ws, etiqueta, desdeFila, hastaFila) {
+  const et = etiqueta.toUpperCase();
+  const ini = desdeFila || 0;
+  const fin = hastaFila || 90;
+  for(let row = ini; row < fin; row++) {
+    const txt = celdaTxt(ws, row, 0).toUpperCase().trim();
+    if(txt.includes(et)) return row;
+  }
+  return -1;
+}
+
+// Valor en columna D (idx 3) de la fila donde aparece la etiqueta
+function valorPorEtiquetaD(ws, etiqueta, desde, hasta) {
+  const row = buscarFilaPorEtiqueta(ws, etiqueta, desde, hasta);
+  if(row < 0) return 0;
+  return celda(ws, row, 3);
+}
+// Valor en columna B (idx 1)
+function valorPorEtiquetaB(ws, etiqueta, desde, hasta) {
+  const row = buscarFilaPorEtiqueta(ws, etiqueta, desde, hasta);
+  if(row < 0) return 0;
+  return celda(ws, row, 1);
+}
+
+// Detectar turno desde el nombre de la hoja
+function detectarTurno(sheetName) {
+  const up = sheetName.toUpperCase();
+  if(up.includes('TURNO B') || up.match(/\bB\b\s*$/)) return 'B';
+  if(up.includes('TURNO A') || up.match(/\bA\b\s*$/)) return 'A';
+  return 'A'; // por defecto
+}
+
+// Inferir fecha desde nombre de hoja o celda B3
+function inferirFechaGranja(sheetName, ws) {
+  const meses = {ENERO:'01',FEBRERO:'02',MARZO:'03',ABRIL:'04',MAYO:'05',
+                  JUNIO:'06',JULIO:'07',AGOSTO:'08',SEPTIEMBRE:'09',
+                  OCTUBRE:'10',NOVIEMBRE:'11',DICIEMBRE:'12'};
+
+  // 1. Intentar celda B3 (la más confiable): "LUNES 1 DE JUNIO DE 2026"
+  for(let r = 1; r < 5; r++) {
+    const fechaTxt = celdaTxt(ws, r, 1).toUpperCase();
+    const m = fechaTxt.match(/(\d{1,2})\s+DE\s+(\w+)\s+DE\s+(\d{4})/);
+    if(m && meses[m[2]]) {
+      return `${m[3]}-${meses[m[2]]}-${m[1].padStart(2,'0')}`;
+    }
+    const m2 = fechaTxt.match(/(\d{1,2})\s+DE\s+(\w+)\s+(\d{4})/);
+    if(m2 && meses[m2[2]]) {
+      return `${m2[3]}-${meses[m2[2]]}-${m2[1].padStart(2,'0')}`;
+    }
+  }
+
+  // 2. Desde el nombre de la hoja: "JUNIO 1 TURNO A"
+  const up = sheetName.toUpperCase();
+  const mn = up.match(/(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)\s+(\d{1,2})/);
+  if(mn && meses[mn[1]]) {
+    return `2026-${meses[mn[1]]}-${mn[2].padStart(2,'0')}`;
+  }
+  return null;
+}
+
+// Parsea UNA hoja (un turno) del formato La Granja
+function parsearHojaGranja(ws, sheetName) {
+  const fecha = inferirFechaGranja(sheetName, ws);
+  if(!fecha) return null;
+
+  // Validar que es hoja La Granja
+  const titulo = (celdaTxt(ws, 0, 1) + celdaTxt(ws, 0, 0)).toUpperCase();
+  const tieneMedios = buscarFilaPorEtiqueta(ws, 'MEDIOS', 0, 15) >= 0;
+  if(!titulo.includes('GRANJA') && !tieneMedios) return null;
+
+  const turno = detectarTurno(sheetName);
+
+  // ── Cajero (NOMBRE) ──
+  let cajero = 'Cajera La Granja';
+  const filaNombre = buscarFilaPorEtiqueta(ws, 'NOMBRE', 0, 5);
+  if(filaNombre >= 0) cajero = celdaTxt(ws, filaNombre, 1) || cajero;
+
+  // ── Conceptos antes de medios ──
+  const propina    = valorPorEtiquetaB(ws, 'PROPINA', 0, 8);
+  const impuestos  = valorPorEtiquetaB(ws, 'IMPUESTOS', 0, 8);
+  const domicilio  = valorPorEtiquetaB(ws, 'DOMICILIO', 0, 8);
+  const transporte = valorPorEtiquetaB(ws, 'TRANSPORTE', 0, 8);
+
+  // ── Medios de pago (preferir col D = TOTAL, si no col B) ──
+  const filaEf = buscarFilaPorEtiqueta(ws, 'EFECTIVO', 5, 16);
+  const filaDf = buscarFilaPorEtiqueta(ws, 'DATAFONO', 5, 16);
+  const filaTr = buscarFilaPorEtiqueta(ws, 'TRANSFERENCIA', 5, 16);
+  const filaCxc = buscarFilaPorEtiqueta(ws, 'CXC', 5, 16);
+
+  const ef  = filaEf >= 0 ? (celda(ws, filaEf, 3) || celda(ws, filaEf, 1)) : 0;
+  const df  = filaDf >= 0 ? (celda(ws, filaDf, 3) || celda(ws, filaDf, 1)) : 0;
+  const tr  = filaTr >= 0 ? (celda(ws, filaTr, 3) || celda(ws, filaTr, 1)) : 0;
+  const cxc = filaCxc >= 0 ? (celda(ws, filaCxc, 3) || celda(ws, filaCxc, 1)) : 0;
+
+  // ── Totales ──
+  const totalMedios       = valorPorEtiquetaD(ws, 'TOTAL MEDIOS', 8, 20);
+  const totalAntesImp     = valorPorEtiquetaD(ws, 'ANTES DE IMPUESTOS', 8, 20);
+  const totalAntesPropina = valorPorEtiquetaD(ws, 'ANTES DE PROPINA', 8, 20);
+
+  // ── Anticipos / terceros ──
+  const anticipoEf    = valorPorEtiquetaD(ws, 'ANTICIPOS DE CLIENTES: EFECTIVO', 12, 40);
+  const anticipoOtros = valorPorEtiquetaD(ws, 'OTROS METODOS DE PAGO', 18, 40);
+  const efTerceros    = valorPorEtiquetaD(ws, 'TERCEROS', 25, 45);
+
+  // ── Traslado caja fuerte ──
+  const traslado = valorPorEtiquetaD(ws, 'TRANSLADO', 30, 50) || valorPorEtiquetaD(ws, 'TRASLADO', 30, 50);
+
+  // ── Egresos: desde la fila de "EGRESOS REALIZADOS" hasta "SALDO ANTERIOR" ──
+  const filaEgr = buscarFilaPorEtiqueta(ws, 'EGRESOS REALIZADOS', 35, 55);
+  const filaSaldoAnt = buscarFilaPorEtiqueta(ws, 'SALDO ANTERIOR', 50, 70);
+  const egresos = [];
+  if(filaEgr >= 0) {
+    const fin = filaSaldoAnt >= 0 ? filaSaldoAnt : filaEgr + 18;
+    for(let row = filaEgr + 1; row < fin; row++) {
+      const desc = celdaTxt(ws, row, 0);
+      const val  = celda(ws, row, 3);
+      if(desc && val > 0) {
+        const proper = desc.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+        egresos.push({ desc: proper, val, fotos: [] });
+      }
+    }
+  }
+  const totalEgresos = egresos.reduce((a, e) => a + e.val, 0);
+
+  // ── Saldos ──
+  const saldoAnterior = valorPorEtiquetaD(ws, 'SALDO ANTERIOR', 50, 70);
+  const saldoFinal    = valorPorEtiquetaD(ws, 'SALDO FINAL', 50, 70);
+
+  // ── Conteo billetes/monedas (col F=denominación idx5, col G=cantidad idx6, col H=valor idx7) ──
+  // Buscar fila "CONTEO"
+  let totalBilletes = valorPorEtiquetaTextoH(ws, 'TOTAL BILLETES');
+  let totalMonedas  = valorPorEtiquetaTextoH(ws, 'TOTAL MONEDAS');
+  let totalConteo   = valorPorEtiquetaTextoH(ws, 'TOTAL EFECTIVO');
+
+  // Cantidades de billetes/monedas por denominación (col F=valor, col G=cantidad)
+  const denomCant = leerDenominaciones(ws);
+
+  return {
+    fecha,
+    turno,
+    cajero,
+    propina,
+    impuestos,
+    domicilio,
+    transporte,
+    efectivo:      ef,
+    datafono:      df,
+    transferencia: tr,
+    cxc,
+    total_ventas:        totalMedios     || (ef + df + tr + cxc),
+    total_antes_imp:     totalAntesImp,
+    total_sin_propina:   totalAntesPropina || (totalMedios - impuestos - propina),
+    anticipo_ef:    anticipoEf,
+    anticipo_otros: anticipoOtros,
+    ef_terceros:    efTerceros,
+    traslado_fuerte: traslado,
+    egresos,
+    total_egresos:  totalEgresos,
+    saldo_anterior: saldoAnterior,
+    saldo_final:    saldoFinal,
+    conteo_billetes: totalBilletes,
+    conteo_monedas:  totalMonedas,
+    conteo_fisico:   totalConteo,
+    cant_b100: denomCant.b100||0, cant_b50: denomCant.b50||0, cant_b20: denomCant.b20||0,
+    cant_b10: denomCant.b10||0, cant_b5: denomCant.b5||0, cant_b2: denomCant.b2||0, cant_b1: denomCant.b1||0,
+    cant_m1000: denomCant.m1000||0, cant_m500: denomCant.m500||0, cant_m200: denomCant.m200||0,
+    cant_m100: denomCant.m100||0, cant_m50: denomCant.m50||0,
+    guardado_en: new Date().toISOString()
+  };
+}
+
+// Valor en columna H (idx 7) de la fila donde aparece etiqueta en col F (idx 5)
+function valorPorEtiquetaTextoH(ws, etiqueta) {
+  const et = etiqueta.toUpperCase();
+  for(let row = 60; row < 90; row++) {
+    const txt = celdaTxt(ws, row, 5).toUpperCase().trim();
+    if(txt.includes(et)) return celda(ws, row, 7);
+  }
+  return 0;
+}
+
+// Lee cantidades por denominación: col F=valor denominación, col G=cantidad
+function leerDenominaciones(ws) {
+  const map = {
+    100000:'b100', 50000:'b50', 20000:'b20', 10000:'b10', 5000:'b5', 2000:'b2', 1000:'b1',
+    500:'m500', 200:'m200', 100:'m100', 50:'m50'
+  };
+  // Nota: 1000 puede ser billete (b1) o moneda (m1000). En La Granja el conteo de billetes
+  // va arriba (sección billetes) y monedas abajo. Distinguimos por orden de aparición.
+  const res = {};
+  let enMonedas = false;
+  for(let row = 60; row < 90; row++) {
+    const fTxt = celdaTxt(ws, row, 5).toUpperCase();
+    if(fTxt.includes('MONEDA')) { enMonedas = true; continue; }
+    const denom = celda(ws, row, 5);   // col F
+    const cant  = celda(ws, row, 6);   // col G
+    if(denom > 0 && cant > 0) {
+      if(denom === 1000) {
+        res[ enMonedas ? 'm1000' : 'b1' ] = cant;
+      } else if(map[denom]) {
+        res[map[denom]] = cant;
+      }
+    }
+  }
+  return res;
+}
+
 
 function celda(ws, row, col) {
   // SheetJS uses A1 notation — convert row/col to cell address
