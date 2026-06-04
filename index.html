@@ -995,7 +995,7 @@
   <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;">
     <div>
       <h1>Cuadre de Caja</h1>
-      <p id="cuadre-subtitle">Selecciona el turno e ingresa los valores para cuadrar la caja · <span style="color:var(--gold);font-weight:600;">v3</span></p>
+      <p id="cuadre-subtitle">Selecciona el turno e ingresa los valores para cuadrar la caja · <span style="color:var(--gold);font-weight:600;">v4</span></p>
     </div>
     <div style="display:flex;gap:8px;margin-top:6px;" id="cuadre-header-btns"></div>
   </div>
@@ -2522,10 +2522,18 @@ function renderReportes() {
   const totalEgrAdmin=mesRep ? _egrAdminCache.filter(r=>r.periodo===mesRep).reduce((a,r)=>a+r.valor,0) : _egrAdminCache.reduce((a,r)=>a+r.valor,0);
   const totalEgr=totalEgrCaja+totalEgrAdmin;
   const totalTraslado=data.reduce((a,d)=>a+(d.traslado_fuerte||0),0);
+  const totalPropinas=data.reduce((a,d)=>a+(d.propina||0),0);
+  const totalImpuestos=data.reduce((a,d)=>a+(d.impuestos||0),0);
+  const totalDomicilio=data.reduce((a,d)=>a+(d.domicilio||0),0);
+  const totalTransporte=data.reduce((a,d)=>a+(d.transporte||0),0);
   document.getElementById('kpis_reportes').innerHTML=`
     <div class="stat-chip"><div class="label">Total Ventas (Período)</div><div class="value gold">${fmt(totalMes)}</div><div class="sub">${data.length} días</div></div>
     <div class="stat-chip"><div class="label">Promedio Diario</div><div class="value">${fmt(promDia)}</div></div>
     <div class="stat-chip"><div class="label">Mejor Día</div><div class="value green">${fmt(maxVenta)}</div><div class="sub">${formatFecha(data.find(d=>d.total_ventas===maxVenta)?.fecha||'')}</div></div>
+    <div class="stat-chip"><div class="label">💰 Total Propinas</div><div class="value" style="color:#7ddfa3">${fmt(totalPropinas)}</div><div class="sub">Acumulado del período</div></div>
+    <div class="stat-chip"><div class="label">🧾 Impuesto al Consumo</div><div class="value" style="color:#93c5fd">${fmt(totalImpuestos)}</div><div class="sub">Acumulado del período</div></div>
+    <div class="stat-chip"><div class="label">🛵 Total Domicilio</div><div class="value" style="color:#f0b86e">${fmt(totalDomicilio)}</div><div class="sub">Acumulado del período</div></div>
+    <div class="stat-chip"><div class="label">🚗 Total Transporte</div><div class="value" style="color:#c4a0f0">${fmt(totalTransporte)}</div><div class="sub">Acumulado del período</div></div>
     <div class="stat-chip"><div class="label">Total Egresos</div><div class="value red">${fmt(totalEgr)}</div><div class="sub">Caja: ${fmt(totalEgrCaja)} · Admin: ${fmt(totalEgrAdmin)}</div></div>
     <div class="stat-chip"><div class="label">🏦 Traslado a Caja Fuerte</div><div class="value gold">${fmt(totalTraslado)}</div><div class="sub">Movimiento interno del período</div></div>`;
   const ultimos=data.slice(-14);
@@ -2570,7 +2578,10 @@ function generarPYG() {
   const [year,mon]=mes.split('-');
   const nombreMes=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][parseInt(mon)-1];
   const totalEf=data.reduce((a,d)=>a+d.efectivo,0),totalDf=data.reduce((a,d)=>a+d.datafono,0),totalTr=data.reduce((a,d)=>a+d.transferencia,0),totalCxc=data.reduce((a,d)=>a+(d.cxc||0),0);
-  const totalPropinas=data.reduce((a,d)=>a+d.propina,0);
+  const totalPropinas=data.reduce((a,d)=>a+(d.propina||0),0);
+  const totalImpuestos=data.reduce((a,d)=>a+(d.impuestos||0),0);
+  const totalDomicilio=data.reduce((a,d)=>a+(d.domicilio||0),0);
+  const totalTransporte=data.reduce((a,d)=>a+(d.transporte||0),0);
   const totalVentas=totalEf+totalDf+totalTr+totalCxc;
   const ventasSinPropina=totalVentas-totalPropinas;
   const catMap={};
@@ -2634,6 +2645,15 @@ function generarPYG() {
       <div class="pyg-line total"><span>TOTAL EGRESOS CAJA</span><span style="color:var(--red)">-${fmt(totalEgresos)}</span></div>
     </div>
     ${egrAdminSection}
+    <div class="divider"></div>
+    <div class="pyg-section">
+      <div style="color:var(--text-muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">🧾 Conceptos del Período (acumulados)</div>
+      <div class="pyg-line"><span>💰 Propinas</span><span style="color:#7ddfa3">${fmt(totalPropinas)}</span></div>
+      <div class="pyg-line"><span>🧾 Impuesto al Consumo</span><span style="color:#93c5fd">${fmt(totalImpuestos)}</span></div>
+      <div class="pyg-line"><span>🛵 Domicilio</span><span style="color:#f0b86e">${fmt(totalDomicilio)}</span></div>
+      <div class="pyg-line"><span>🚗 Transporte</span><span style="color:#c4a0f0">${fmt(totalTransporte)}</span></div>
+      <div style="color:var(--text-muted);font-size:0.74rem;padding:6px 2px;">Estos conceptos son informativos del período. Las propinas se pagan aparte y no afectan la utilidad operativa.</div>
+    </div>
     ${totalTraslado > 0 ? `
     <div class="divider"></div>
     <div class="pyg-section">
